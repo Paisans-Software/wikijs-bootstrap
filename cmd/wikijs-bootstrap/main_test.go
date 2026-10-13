@@ -37,3 +37,20 @@ func TestLockFailureReturnsANilInterface(t *testing.T) {
 		t.Errorf("Lock returned %#v with its error, want a nil interface", h)
 	}
 }
+
+func TestHealthURL(t *testing.T) {
+	for addr, want := range map[string]string{
+		":8090":          "http://127.0.0.1:8090/healthz",
+		"0.0.0.0:8090":   "http://127.0.0.1:8090/healthz",
+		"127.0.0.1:8090": "http://127.0.0.1:8090/healthz",
+		"[::]:8090":      "http://127.0.0.1:8090/healthz",
+		"[::1]:8090":     "http://[::1]:8090/healthz",
+	} {
+		if got, err := healthURL(addr); err != nil || got != want {
+			t.Errorf("%q: %q, %v; want %q", addr, got, err, want)
+		}
+	}
+	if got, err := healthURL("8090"); err == nil {
+		t.Errorf("8090 gave %q, want an error", got)
+	}
+}

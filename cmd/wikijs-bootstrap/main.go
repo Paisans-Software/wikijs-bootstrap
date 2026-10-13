@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -59,14 +60,35 @@ func (d dbState) Lock(ctx context.Context) (converge.Held, error) {
 	return h, nil
 }
 
+// healthURL is the address the healthcheck dials for a listen address: a
+// wildcard or empty host means this machine.
+func healthURL(addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/healthz", nil
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		addr := os.Getenv("HEALTH_ADDR")
 		if addr == "" {
 			addr = ":8090"
 		}
-		resp, err := http.Get("http://127.0.0.1" + addr + "/healthz")
-		if err != nil || resp.StatusCode != http.StatusOK {
+		u, err := healthURL(addr)
+		if err != nil {
+			os.Exit(1)
+		}
+		resp, err := (&http.Client{Timeout: 4 * time.Second}).Get(u)
+		if err != nil {
+			os.Exit(1)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
 			os.Exit(1)
 		}
 		return
