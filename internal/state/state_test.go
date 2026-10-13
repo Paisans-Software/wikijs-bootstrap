@@ -40,19 +40,34 @@ func TestNoSettingsTableIsNotPopulated(t *testing.T) {
 
 func TestTheLockExcludesASecondHolder(t *testing.T) {
 	d := DB{DSN: postgres(t)}
-	unlock, err := d.Lock(context.Background())
+	h, err := d.Lock(context.Background())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := h.Check(context.Background()); err != nil {
+		t.Errorf("check on a live lock: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := d.Lock(ctx); err == nil {
 		t.Fatal("a second holder took the lock")
 	}
-	unlock()
-	if u2, err := d.Lock(context.Background()); err != nil {
+	h.Release()
+	h2, err := d.Lock(context.Background())
+	if err != nil {
 		t.Fatal(err)
-	} else {
-		u2()
+	}
+	h2.Release()
+}
+
+func TestCheckErrorsOnceTheConnectionIsClosed(t *testing.T) {
+	d := DB{DSN: postgres(t)}
+	h, err := d.Lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.conn.Close(context.Background())
+	if err := h.Check(context.Background()); err == nil {
+		t.Error("check succeeded on a closed connection")
 	}
 }
