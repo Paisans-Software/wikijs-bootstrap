@@ -25,11 +25,18 @@ func New() Stopper {
 
 // StopApp signals the one process running `node ... server`, the image's
 // command (dev/build/Dockerfile:56).
+//
+// Two matches are possible (a forked child, or a restart overlap). Only the
+// lowest pid is signalled: that is the container's own Wiki.js process, and
+// stopping it ends the container, which its restart policy brings back. The
+// /proc listing is lexical ("10" sorts before "2"), so the lowest pid is
+// chosen numerically, never by the order entries arrive in.
 func (s Stopper) StopApp() error {
 	entries, err := os.ReadDir(s.ProcRoot)
 	if err != nil {
 		return err
 	}
+	lowest := -1
 	for _, e := range entries {
 		pid, err := strconv.Atoi(e.Name())
 		if err != nil || pid == s.Self {
@@ -41,8 +48,13 @@ func (s Stopper) StopApp() error {
 		}
 		args := bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0})
 		if len(args) >= 2 && filepath.Base(string(args[0])) == "node" && string(args[len(args)-1]) == "server" {
-			return s.Signal(pid)
+			if lowest == -1 || pid < lowest {
+				lowest = pid
+			}
 		}
 	}
-	return fmt.Errorf("no Wiki.js process in %s: is pid: service:app set on the bootstrap?", s.ProcRoot)
+	if lowest == -1 {
+		return fmt.Errorf("no Wiki.js process in %s: is pid: service:app set on the bootstrap?", s.ProcRoot)
+	}
+	return s.Signal(lowest)
 }
