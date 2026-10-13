@@ -85,15 +85,18 @@ func Run(ctx context.Context, c config.Config, w Wiki, s State, p Stopper, wait 
 		if err := w.Finalize(ctx, wiki.Finalize{AdminEmail: c.AdminEmail, AdminPassword: c.AdminPassword, SiteURL: c.PublicURL}); err != nil {
 			return fmt.Errorf("setup: %w", err)
 		}
-		if err := until(ctx, wait, func() error {
-			if on, err := w.SetupMode(ctx); err != nil || on {
-				return fmt.Errorf("still in setup mode (%v)", err)
-			}
-			return nil
-		}); err != nil {
-			return err
+		if err := until(ctx, wait, func() error { return stillInSetup(ctx, w) }); err != nil {
+			return fmt.Errorf("after setup: %w", err)
 		}
 	case populated && setup:
+		// Settings are present and the app still says setup. A finalize
+		// that this or an earlier run started may be finishing; give it the
+		// same budget before concluding the instance is stale.
+		if err := until(ctx, wait, func() error { return stillInSetup(ctx, w) }); err == nil {
+			break
+		} else if !errors.Is(err, errStillInSetup) {
+			return err
+		}
 		if err := p.StopApp(); err != nil {
 			return err
 		}
@@ -129,6 +132,20 @@ func Run(ctx context.Context, c config.Config, w Wiki, s State, p Stopper, wait 
 	return groups(ctx, c, w, token)
 }
 
+var errStillInSetup = errors.New("Wiki.js is still in setup mode")
+
+// stillInSetup is nil once Wiki.js has left setup mode.
+func stillInSetup(ctx context.Context, w Wiki) error {
+	on, err := w.SetupMode(ctx)
+	if err != nil {
+		return err
+	}
+	if on {
+		return errStillInSetup
+	}
+	return nil
+}
+
 func strategies(c config.Config) []wiki.Strategy {
 	return []wiki.Strategy{
 		{
@@ -154,6 +171,9 @@ func groups(ctx context.Context, c config.Config, w Wiki, token string) error {
 	}
 	ids := map[string]int{}
 	for _, g := range list {
+		if _, dup := ids[g.Name]; dup && g.Name == c.AdminGroup {
+			return fmt.Errorf("more than one Wiki.js group is named %q, the admin group; refusing to pick one", g.Name)
+		}
 		ids[g.Name] = g.ID
 	}
 	for _, name := range c.SyncedGroups {
@@ -165,6 +185,9 @@ func groups(ctx context.Context, c config.Config, w Wiki, token string) error {
 			return err
 		}
 		ids[name] = id
+	}
+	if id := ids[c.AdminGroup]; id == 1 || id == guestsID {
+		return fmt.Errorf("the admin group %q is Wiki.js's built-in group %d; refusing to rewrite its permissions", c.AdminGroup, id)
 	}
 	admin, err := w.Group(ctx, token, ids[c.AdminGroup])
 	if err != nil {
@@ -186,7 +209,7 @@ func until(ctx context.Context, wait time.Duration, f func() error) error {
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("%w (last: %v)", ctx.Err(), err)
 		case <-time.After(wait):
 		}
 	}

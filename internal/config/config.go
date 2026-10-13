@@ -63,6 +63,14 @@ func FromEnv(get func(string) string) (Config, error) {
 	if c.HealthAddr == "" {
 		c.HealthAddr = ":8090"
 	}
+	// Wiki.js's own groups are matched by name on the other side, and the
+	// admin group gets rewritten permissions: naming a built-in one would
+	// strip Administrators or open up Guests.
+	for _, g := range append([]string{c.AdminGroup}, c.SyncedGroups...) {
+		if g == "Administrators" || g == "Guests" {
+			return Config{}, fmt.Errorf("%q cannot be ADMIN_GROUP or in SYNCED_GROUPS: it is one of Wiki.js's built-in groups", g)
+		}
+	}
 	// Without the admin group nobody but the break glass admin could
 	// administer the wiki, so the blueprint's validation refuses this too.
 	if !slices.Contains(c.SyncedGroups, c.AdminGroup) {

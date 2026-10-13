@@ -45,6 +45,23 @@ func TestSyncedGroupsMustHoldTheAdminGroup(t *testing.T) {
 	}
 }
 
+func TestBuiltInWikiGroupsAreRefused(t *testing.T) {
+	for _, name := range []string{"Administrators", "Guests"} {
+		for _, over := range []map[string]string{
+			{"ADMIN_GROUP": name, "SYNCED_GROUPS": name + ",members"},
+			{"SYNCED_GROUPS": "admins," + name},
+		} {
+			_, err := FromEnv(env(over))
+			if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "built-in") {
+				t.Errorf("%v: err = %v", over, err)
+			}
+		}
+	}
+	if _, err := FromEnv(env(map[string]string{"ADMIN_GROUP": "administrators", "SYNCED_GROUPS": "administrators"})); err != nil {
+		t.Errorf("the refusal is exact and case-sensitive: %v", err)
+	}
+}
+
 func TestNoVerifyBecomesRequireForPgx(t *testing.T) {
 	c, _ := FromEnv(env(nil))
 	if got := c.PgxDSN(); got != "postgresql://u:p@db:5432/wiki?sslmode=require" {
