@@ -11,17 +11,39 @@ import (
 	"testing"
 )
 
-var allowedMutations = []string{"login", "updateStrategies", "updateConfig", "create", "update"}
+// Each is namespace.field, exactly as the GraphQL document names it: a bare
+// field name would let users{update(...)} or pages{update(...)} through.
+var allowedMutations = []string{
+	"authentication.login",
+	"authentication.updateStrategies",
+	"site.updateConfig",
+	"groups.create",
+	"groups.update",
+}
 
 func sources(t *testing.T) map[string]string {
+	t.Helper()
 	out := map[string]string{}
-	filepath.WalkDir("../..", func(path string, d os.DirEntry, err error) error {
-		if err == nil && strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
-			b, _ := os.ReadFile(path)
-			out[path] = string(b)
+	err := filepath.WalkDir("../..", func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
+		if d.IsDir() && path != "../.." && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir // .git, and other worktrees under .worktrees
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[path] = string(b)
 		return nil
 	})
+	if err != nil {
+		t.Fatalf("reading the sources: %v", err)
+	}
 	if len(out) == 0 {
 		t.Fatal("no sources found")
 	}
@@ -29,11 +51,11 @@ func sources(t *testing.T) map[string]string {
 }
 
 func TestOnlyTheNamedMutations(t *testing.T) {
-	field := regexp.MustCompile(`(?s)mutation\([^)]*\)\{\w+\{(\w+)\(`)
+	field := regexp.MustCompile(`(?s)mutation\([^)]*\)\{(\w+)\{(\w+)\(`)
 	for path, src := range sources(t) {
 		for _, m := range field.FindAllStringSubmatch(src, -1) {
-			if !slices.Contains(allowedMutations, m[1]) {
-				t.Errorf("%s: mutation %s is not one the spec names", path, m[1])
+			if name := m[1] + "." + m[2]; !slices.Contains(allowedMutations, name) {
+				t.Errorf("%s: mutation %s is not one the spec names", path, name)
 			}
 		}
 		if strings.Contains(src, "mutation{") || strings.Contains(src, "mutation {") {
