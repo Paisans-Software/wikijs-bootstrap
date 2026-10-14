@@ -17,10 +17,13 @@ type Stopper struct {
 	ProcRoot string
 	Self     int
 	Signal   func(pid int) error
+	// Log receives the one line every write is logged on: what, the target
+	// and the result. Nil logs nothing.
+	Log func(format string, args ...any)
 }
 
-func New() Stopper {
-	return Stopper{ProcRoot: "/proc", Self: os.Getpid(), Signal: func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }}
+func New(log func(format string, args ...any)) Stopper {
+	return Stopper{ProcRoot: "/proc", Self: os.Getpid(), Signal: func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }, Log: log}
 }
 
 // StopApp signals the one process running `node ... server`, the image's
@@ -56,5 +59,13 @@ func (s Stopper) StopApp() error {
 	if lowest == -1 {
 		return fmt.Errorf("no Wiki.js process in %s: is pid: service:app set on the bootstrap?", s.ProcRoot)
 	}
-	return s.Signal(lowest)
+	err = s.Signal(lowest)
+	if s.Log != nil {
+		if err != nil {
+			s.Log("write SIGTERM Wiki.js pid %d: %v", lowest, err)
+		} else {
+			s.Log("write SIGTERM Wiki.js pid %d: ok", lowest)
+		}
+	}
+	return err
 }

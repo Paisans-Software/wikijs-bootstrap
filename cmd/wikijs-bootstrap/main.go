@@ -105,7 +105,7 @@ func main() {
 	w := &wiki.Client{BaseURL: c.WikiURL, HTTP: &http.Client{Timeout: 5 * time.Minute}, Log: log.Printf}
 	db := dbState{state.DB{DSN: c.PgxDSN()}}
 	for {
-		err := converge.Run(context.Background(), c, w, db, procs.New(), 2*time.Second)
+		err := converge.Run(context.Background(), c, w, db, procs.New(log.Printf), 2*time.Second)
 		s.set(err)
 		if err == nil {
 			log.Print("converged")
