@@ -61,6 +61,8 @@ const (
 	qLogin       = `mutation($u:String!,$p:String!){authentication{login(username:$u,password:$p,strategy:"local"){jwt responseResult{succeeded message}}}}`
 	qStrategies  = `mutation($s:[AuthenticationStrategyInput]!){authentication{updateStrategies(strategies:$s){responseResult{succeeded message}}}}`
 	qSite        = `mutation($host:String,$title:String,$description:String,$logoUrl:String,$autoLogin:Boolean,$hideLocal:Boolean,$trustProxy:Boolean,$upload:Int){site{updateConfig(host:$host,title:$title,description:$description,logoUrl:$logoUrl,authAutoLogin:$autoLogin,authHideLocal:$hideLocal,securityTrustProxy:$trustProxy,uploadMaxFileSize:$upload){responseResult{succeeded message}}}}`
+	qActive      = `{authentication{activeStrategies{key strategy{key} displayName order isEnabled selfRegistration config{key value}}}}`
+	qSiteConfig  = `{site{config{host title description logoUrl authAutoLogin authHideLocal securityTrustProxy uploadMaxFileSize}}}`
 	qGroups      = `{groups{list{id name}}}`
 	qGroup       = `query($id:Int!){groups{single(id:$id){id name redirectOnLogin permissions pageRules{id deny match roles path locales}}}}`
 	qCreateGroup = `mutation($n:String!){groups{create(name:$n){responseResult{succeeded message} group{id}}}}`
@@ -185,6 +187,72 @@ func (c *Client) UpdateSite(ctx context.Context, token string, s Site) error {
 	err = check(err, out.Site.UpdateConfig.ResponseResult)
 	c.logWrite("site.updateConfig", s.Host, err)
 	return err
+}
+
+// ActiveStrategies reads the strategy list as UpdateStrategies writes it.
+// Wiki.js returns each config value as JSON of the strategy's definition of
+// that field with the stored value beside it, and only the fields the
+// definition names (server/graph/resolvers/authentication.js:51-71 at
+// v2.5.315); Config holds the stored values, secrets included, so a caller
+// must not print it.
+func (c *Client) ActiveStrategies(ctx context.Context, token string) ([]Strategy, error) {
+	var out struct {
+		Authentication struct {
+			ActiveStrategies []struct {
+				Key      string `json:"key"`
+				Strategy struct {
+					Key string `json:"key"`
+				} `json:"strategy"`
+				DisplayName      string `json:"displayName"`
+				Order            int    `json:"order"`
+				IsEnabled        bool   `json:"isEnabled"`
+				SelfRegistration bool   `json:"selfRegistration"`
+				Config           []struct {
+					Key   string `json:"key"`
+					Value string `json:"value"`
+				} `json:"config"`
+			} `json:"activeStrategies"`
+		} `json:"authentication"`
+	}
+	if err := c.gql(ctx, token, qActive, nil, &out); err != nil {
+		return nil, err
+	}
+	list := make([]Strategy, 0, len(out.Authentication.ActiveStrategies))
+	for _, a := range out.Authentication.ActiveStrategies {
+		s := Strategy{Key: a.Key, StrategyKey: a.Strategy.Key, DisplayName: a.DisplayName, Order: a.Order, Enabled: a.IsEnabled, SelfRegistration: a.SelfRegistration, Config: map[string]any{}}
+		for _, kv := range a.Config {
+			var v struct {
+				Value any `json:"value"`
+			}
+			if err := json.Unmarshal([]byte(kv.Value), &v); err != nil {
+				return nil, fmt.Errorf("strategy %s config %s does not parse", a.Key, kv.Key)
+			}
+			s.Config[kv.Key] = v.Value
+		}
+		list = append(list, s)
+	}
+	return list, nil
+}
+
+// SiteConfig reads the site settings UpdateSite writes.
+func (c *Client) SiteConfig(ctx context.Context, token string) (Site, error) {
+	var out struct {
+		Site struct {
+			Config struct {
+				Host        string `json:"host"`
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				LogoURL     string `json:"logoUrl"`
+				AutoLogin   bool   `json:"authAutoLogin"`
+				HideLocal   bool   `json:"authHideLocal"`
+				TrustProxy  bool   `json:"securityTrustProxy"`
+				Upload      int    `json:"uploadMaxFileSize"`
+			} `json:"config"`
+		} `json:"site"`
+	}
+	err := c.gql(ctx, token, qSiteConfig, nil, &out)
+	s := out.Site.Config
+	return Site{Host: s.Host, Title: s.Title, Description: s.Description, LogoURL: s.LogoURL, AutoLogin: s.AutoLogin, HideLocal: s.HideLocal, TrustProxy: s.TrustProxy, UploadMaxFileSize: s.Upload}, err
 }
 
 func (c *Client) Groups(ctx context.Context, token string) ([]GroupSummary, error) {
