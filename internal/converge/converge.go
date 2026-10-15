@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/paisans-software/wikijs-bootstrap/internal/config"
@@ -102,9 +103,9 @@ func guests(c config.Config) ([]string, []wiki.PageRule) {
 	}
 	rules := make([]wiki.PageRule, 0, len(c.GuestPaths))
 	for i, p := range c.GuestPaths {
-		rules = append(rules, wiki.PageRule{ID: fmt.Sprintf("paisans-guests-%d", i+1), Match: "START", Path: p, Roles: guestRoles, Locales: []string{}})
+		rules = append(rules, wiki.PageRule{ID: fmt.Sprintf("paisans-guests-%d", i+1), Match: "START", Path: p, Roles: slices.Clone(guestRoles), Locales: []string{}})
 	}
-	return guestRoles, rules
+	return slices.Clone(guestRoles), rules
 }
 
 func Run(ctx context.Context, c config.Config, w Wiki, s State, p Stopper, wait time.Duration) error {
@@ -162,10 +163,7 @@ func Run(ctx context.Context, c config.Config, w Wiki, s State, p Stopper, wait 
 	if err := w.UpdateStrategies(ctx, token, strategies(c)); err != nil {
 		return err
 	}
-	if err := w.UpdateSite(ctx, token, wiki.Site{
-		Host: c.PublicURL, Title: c.Title, Description: c.Description, LogoURL: c.LogoURL,
-		AutoLogin: true, HideLocal: true, TrustProxy: true, UploadMaxFileSize: c.UploadMaxBytes,
-	}); err != nil {
+	if err := w.UpdateSite(ctx, token, desiredSite(c)); err != nil {
 		return err
 	}
 	g, err := w.Group(ctx, token, guestsID)
@@ -194,6 +192,13 @@ func stillInSetup(ctx context.Context, w Wiki) error {
 		return errStillInSetup
 	}
 	return nil
+}
+
+func desiredSite(c config.Config) wiki.Site {
+	return wiki.Site{
+		Host: c.PublicURL, Title: c.Title, Description: c.Description, LogoURL: c.LogoURL,
+		AutoLogin: true, HideLocal: true, TrustProxy: true, UploadMaxFileSize: c.UploadMaxBytes,
+	}
 }
 
 func strategies(c config.Config) []wiki.Strategy {
@@ -252,7 +257,7 @@ func groups(ctx context.Context, c config.Config, w Wiki, token string) error {
 	if admin.ID == 0 {
 		return fmt.Errorf("the admin group %q does not exist in Wiki.js, so its permissions were not set", c.AdminGroup)
 	}
-	admin.Permissions = AdminPermissions
+	admin.Permissions = slices.Clone(AdminPermissions)
 	admin.PageRules = withAdminRule(admin.PageRules)
 	return w.UpdateGroup(ctx, token, admin)
 }
@@ -269,7 +274,9 @@ func seedMembers(ctx context.Context, w Wiki, token string, id int) error {
 	if g.ID == 0 {
 		return fmt.Errorf("the member group was created as %d but Wiki.js does not return it, so it was not seeded", id)
 	}
-	g.Permissions, g.PageRules = memberRoles, []wiki.PageRule{memberRule}
+	rule := memberRule
+	rule.Roles = slices.Clone(memberRoles)
+	g.Permissions, g.PageRules = slices.Clone(memberRoles), []wiki.PageRule{rule}
 	return w.UpdateGroup(ctx, token, g)
 }
 
@@ -287,7 +294,7 @@ func seedMembers(ctx context.Context, w Wiki, token string, id int) error {
 // for is skipped (auth.js:252). So a deny rule the admins add still wins
 // over this one wherever it is at least as specific.
 func withAdminRule(rules []wiki.PageRule) []wiki.PageRule {
-	own := wiki.PageRule{ID: adminRuleID, Match: "START", Path: "", Roles: adminPageRoles, Locales: []string{}}
+	own := ownAdminRule()
 	out := make([]wiki.PageRule, 0, len(rules)+1)
 	found := false
 	for _, r := range rules {
@@ -300,6 +307,12 @@ func withAdminRule(rules []wiki.PageRule) []wiki.PageRule {
 		out = append(out, own)
 	}
 	return out
+}
+
+// ownAdminRule is the paisans-admin rule: allow adminPageRoles on every path in
+// every locale.
+func ownAdminRule() wiki.PageRule {
+	return wiki.PageRule{ID: adminRuleID, Match: "START", Path: "", Roles: slices.Clone(adminPageRoles), Locales: []string{}}
 }
 
 // until retries f every wait for two minutes' worth of tries, or until ctx ends.
