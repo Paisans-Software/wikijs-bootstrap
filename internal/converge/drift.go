@@ -2,6 +2,7 @@ package converge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -32,8 +33,11 @@ type Reader interface {
 // defaults when it saves.
 func Drift(ctx context.Context, c config.Config, r Reader) ([]string, error) {
 	token, err := r.Login(ctx, c.AdminEmail, c.AdminPassword)
-	if err != nil {
+	if errors.Is(err, wiki.ErrLogin) {
 		return nil, fmt.Errorf("the break glass admin %s could not log in, so nothing could be compared: %w", c.AdminEmail, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("logging in to compare: %w", err)
 	}
 	var d []string
 	have, err := r.ActiveStrategies(ctx, token)

@@ -3,6 +3,7 @@ package converge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -208,9 +209,14 @@ func TestSiteDrift(t *testing.T) {
 
 func TestAFailedPollIsAnErrorNotDrift(t *testing.T) {
 	w, _ := converged(t)
-	w.loginErr = errors.New("bad password")
+	w.loginErr = fmt.Errorf("%w: bad password", wiki.ErrLogin)
 	d, err := Drift(context.Background(), cfg(), w)
 	if err == nil || !strings.Contains(err.Error(), "break glass") || d != nil {
 		t.Errorf("%q, %v", d, err)
+	}
+	w.loginErr = errors.New(`Post "http://app:3000/graphql": dial tcp: lookup app: no such host`)
+	d, err = Drift(context.Background(), cfg(), w)
+	if err == nil || strings.Contains(err.Error(), "break glass") || !strings.Contains(err.Error(), "no such host") || d != nil {
+		t.Errorf("an unreachable Wiki.js reads as a refused login: %q, %v", d, err)
 	}
 }
