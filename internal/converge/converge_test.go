@@ -120,7 +120,7 @@ type fakeStopper struct{ stopped int }
 func (p *fakeStopper) StopApp() error { p.stopped++; return nil }
 
 func cfg() config.Config {
-	return config.Config{WikiURL: "http://app:3000", PublicURL: "https://wiki.example.org", AdminEmail: "wikijs-admin@example.org", AdminPassword: "not-real", ClientID: "cid", ClientSecret: "not-real", AuthorizeURL: "https://id.example.org/authorize", TokenURL: "https://id.example.org/api/oidc/token", UserinfoURL: "https://id.example.org/api/oidc/userinfo", LogoutURL: "https://id.example.org/api/oidc/end-session", AdminGroup: "admins", SyncedGroups: []string{"admins", "members"}, Title: "Example Wiki", UploadMaxBytes: 5 << 20}
+	return config.Config{WikiURL: "http://app:3000", PublicURL: "https://wiki.example.org", AdminEmail: "wikijs-admin@example.org", AdminPassword: "not-real", ClientID: "cid", ClientSecret: "not-real", AuthorizeURL: "https://id.example.org/authorize", TokenURL: "https://id.example.org/api/oidc/token", UserinfoURL: "https://id.example.org/api/oidc/userinfo", LogoutURL: "https://id.example.org/api/oidc/end-session", AdminGroup: "admins", MemberGroup: "members", SyncedGroups: []string{"admins", "members"}, Title: "Example Wiki", UploadMaxBytes: 5 << 20}
 }
 
 func TestAFreshDatabaseIsSetUpThenConverged(t *testing.T) {
@@ -129,7 +129,7 @@ func TestAFreshDatabaseIsSetUpThenConverged(t *testing.T) {
 	if err := Run(context.Background(), cfg(), w, s, &fakeStopper{}, time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"finalize", "updateStrategies", "updateConfig", "update 2", "create admins", "create members", "update 3"}
+	want := []string{"finalize", "updateStrategies", "updateConfig", "update 2", "create admins", "create members", "update 4", "update 3"}
 	if !slices.Equal(w.writes, want) {
 		t.Errorf("writes %v, want %v", w.writes, want)
 	}
@@ -302,8 +302,70 @@ func TestANewAdminGroupCanWritePagesEverywhere(t *testing.T) {
 		}
 		checkAdminRule(t, adminRule(t, admins))
 	}
-	if len(w.groups[4].PageRules) != 1 || w.groups[4].PageRules[0].ID != "default" {
+	if len(w.groups[4].PageRules) != 1 || w.groups[4].PageRules[0].ID != "paisans-members" {
 		t.Errorf("members page rules %+v", w.groups[4].PageRules)
+	}
+}
+
+func sorted(s []string) []string {
+	s = slices.Clone(s)
+	slices.Sort(s)
+	return s
+}
+
+func TestTheMemberGroupIsSeededInTheRunThatCreatesIt(t *testing.T) {
+	w, s := newWiki(false), &fakeState{populated: true}
+	for i := 0; i < 2; i++ {
+		if err := Run(context.Background(), cfg(), w, s, &fakeStopper{}, time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+	}
+	roles := []string{"read:pages", "write:pages", "read:source", "read:history", "read:assets", "write:assets", "read:comments", "write:comments"}
+	members := w.groups[4]
+	if members.Name != "members" || !slices.Equal(sorted(members.Permissions), sorted(roles)) {
+		t.Errorf("members %+v", members)
+	}
+	want := wiki.PageRule{ID: "paisans-members", Match: "REGEX", Path: "^(?!admins(/|$))", Locales: []string{}}
+	if len(members.PageRules) != 1 {
+		t.Fatalf("members page rules %+v", members.PageRules)
+	}
+	got := members.PageRules[0]
+	if !slices.Equal(sorted(got.Roles), sorted(roles)) {
+		t.Errorf("member rule roles %v", got.Roles)
+	}
+	got.Roles = nil
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("member rule %+v, want %+v", got, want)
+	}
+	updates := 0
+	for _, x := range w.writes {
+		if x == "update 4" {
+			updates++
+		}
+	}
+	if updates != 1 {
+		t.Errorf("updated the member group %d times over two runs: %v", updates, w.writes)
+	}
+}
+
+func TestGuestsReadOnlyTheirPaths(t *testing.T) {
+	w, s := newWiki(false), &fakeState{populated: true}
+	c := cfg()
+	c.GuestPaths = []string{"public", "docs/howto"}
+	if err := Run(context.Background(), c, w, s, &fakeStopper{}, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	g := w.groups[2]
+	three := []string{"read:pages", "read:assets", "read:comments"}
+	if !slices.Equal(sorted(g.Permissions), sorted(three)) {
+		t.Errorf("guests permissions %v", g.Permissions)
+	}
+	want := []wiki.PageRule{
+		{ID: "paisans-guests-1", Match: "START", Path: "public", Roles: three, Locales: []string{}},
+		{ID: "paisans-guests-2", Match: "START", Path: "docs/howto", Roles: three, Locales: []string{}},
+	}
+	if !reflect.DeepEqual(g.PageRules, want) {
+		t.Errorf("guests rules %+v", g.PageRules)
 	}
 }
 

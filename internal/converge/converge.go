@@ -71,6 +71,42 @@ var adminPageRoles = []string{
 	"read:comments", "write:comments", "manage:comments",
 }
 
+// memberRoles is what a member group is seeded with, as permissions and as
+// the roles of its one page rule: read, edit and comment on pages and
+// upload assets. Moving, renaming and deleting pages stay with admins, since
+// an edit is undone from a page's history and those are not; write:scripts
+// and write:styles stay with admins, since a member's script would run in
+// an admin's session.
+var memberRoles = []string{
+	"read:pages", "write:pages", "read:source", "read:history",
+	"read:assets", "write:assets", "read:comments", "write:comments",
+}
+
+// memberRule grants memberRoles on every path but admins/ and what is under
+// it. Wiki.js tests a REGEX rule against the page path without its leading
+// slash or locale (server/core/auth.js:264-268 at v2.5.315). On admins/ no
+// member rule matches, so nothing grants a member anything there; the
+// admin group's START "" rule does grant an admin. Wiki.js refuses a rule
+// its safe-regex check judges exponential (server/graph/resolvers/group.js:
+// 167-172); this one has no repetition.
+var memberRule = wiki.PageRule{ID: "paisans-members", Match: "REGEX", Path: "^(?!admins(/|$))", Roles: memberRoles, Locales: []string{}}
+
+// guestRoles is what Guests gets on each of GUEST_PATHS, and nowhere else.
+var guestRoles = []string{"read:pages", "read:assets", "read:comments"}
+
+// guests is the Guests group's permissions and page rules: none without
+// GUEST_PATHS, and with them one read-only START rule for each.
+func guests(c config.Config) ([]string, []wiki.PageRule) {
+	if len(c.GuestPaths) == 0 {
+		return []string{}, []wiki.PageRule{}
+	}
+	rules := make([]wiki.PageRule, 0, len(c.GuestPaths))
+	for i, p := range c.GuestPaths {
+		rules = append(rules, wiki.PageRule{ID: fmt.Sprintf("paisans-guests-%d", i+1), Match: "START", Path: p, Roles: guestRoles, Locales: []string{}})
+	}
+	return guestRoles, rules
+}
+
 func Run(ctx context.Context, c config.Config, w Wiki, s State, p Stopper, wait time.Duration) error {
 	if err := until(ctx, wait, func() error { return w.Healthy(ctx) }); err != nil {
 		return fmt.Errorf("Wiki.js never answered /healthz: %w", err)
@@ -132,15 +168,15 @@ func Run(ctx context.Context, c config.Config, w Wiki, s State, p Stopper, wait 
 	}); err != nil {
 		return err
 	}
-	guests, err := w.Group(ctx, token, guestsID)
+	g, err := w.Group(ctx, token, guestsID)
 	if err != nil {
 		return err
 	}
-	if guests.ID == 0 {
+	if g.ID == 0 {
 		return fmt.Errorf("Wiki.js has no Guests group with id %d; nothing more was changed", guestsID)
 	}
-	guests.Permissions, guests.PageRules = []string{}, []wiki.PageRule{}
-	if err := w.UpdateGroup(ctx, token, guests); err != nil {
+	g.Permissions, g.PageRules = guests(c)
+	if err := w.UpdateGroup(ctx, token, g); err != nil {
 		return err
 	}
 	return groups(ctx, c, w, token)
@@ -176,8 +212,9 @@ func strategies(c config.Config) []wiki.Strategy {
 	}
 }
 
-// groups creates each synced group Wiki.js lacks and sets the admin group's
-// permissions and its paisans-admin page rule. No other group is edited.
+// groups creates each synced group Wiki.js lacks, seeds the member group if
+// this run created it, and sets the admin group's permissions and its
+// paisans-admin page rule. No other group is edited.
 func groups(ctx context.Context, c config.Config, w Wiki, token string) error {
 	list, err := w.Groups(ctx, token)
 	if err != nil {
@@ -199,6 +236,11 @@ func groups(ctx context.Context, c config.Config, w Wiki, token string) error {
 			return err
 		}
 		ids[name] = id
+		if name == c.MemberGroup {
+			if err := seedMembers(ctx, w, token, id); err != nil {
+				return err
+			}
+		}
 	}
 	if id := ids[c.AdminGroup]; id == 1 || id == guestsID {
 		return fmt.Errorf("the admin group %q is Wiki.js's built-in group %d; refusing to rewrite its permissions", c.AdminGroup, id)
@@ -213,6 +255,22 @@ func groups(ctx context.Context, c config.Config, w Wiki, token string) error {
 	admin.Permissions = AdminPermissions
 	admin.PageRules = withAdminRule(admin.PageRules)
 	return w.UpdateGroup(ctx, token, admin)
+}
+
+// seedMembers replaces the defaults groups.create gave the member group
+// (server/app/data.yml:143-158 at v2.5.315) with memberRoles and memberRule.
+// It runs only in the run that created the group: from then on what members
+// may do is the admins', in Wiki.js.
+func seedMembers(ctx context.Context, w Wiki, token string, id int) error {
+	g, err := w.Group(ctx, token, id)
+	if err != nil {
+		return err
+	}
+	if g.ID == 0 {
+		return fmt.Errorf("the member group was created as %d but Wiki.js does not return it, so it was not seeded", id)
+	}
+	g.Permissions, g.PageRules = memberRoles, []wiki.PageRule{memberRule}
+	return w.UpdateGroup(ctx, token, g)
 }
 
 // withAdminRule returns rules with the paisans-admin rule set to allow
