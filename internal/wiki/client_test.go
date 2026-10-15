@@ -62,6 +62,24 @@ func TestSetupModeIsA404OnGraphQL(t *testing.T) {
 	}
 }
 
+// Wiki.js in setup mode answers the probe's 404 and then destroys the
+// socket, so a pooled connection would reset the POST /finalize after it.
+func TestTheSetupProbeClosesItsConnection(t *testing.T) {
+	var closed []bool
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		closed = append(closed, r.Close)
+		http.NotFound(w, r)
+	}))
+	defer s.Close()
+	c := &Client{BaseURL: s.URL, HTTP: s.Client()}
+	if _, err := c.SetupMode(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(closed) != 1 || !closed[0] {
+		t.Errorf("the probe asked to keep its connection: %v", closed)
+	}
+}
+
 func TestLoginReturnsTheJWTOrErrLogin(t *testing.T) {
 	f := &fake{answer: map[string]string{"login": `{"data":{"authentication":{"login":{"jwt":"tok","responseResult":{"succeeded":true}}}}}`}}
 	c, _ := client(f)
@@ -119,5 +137,40 @@ func TestNoPasswordInLogsOrErrors(t *testing.T) {
 	}
 	if strings.Contains(all, pw) {
 		t.Errorf("password leaked: %s", all)
+	}
+}
+
+func TestActiveStrategiesUnwrapsEachConfigValue(t *testing.T) {
+	f := &fake{answer: map[string]string{"activeStrategies": `{"data":{"authentication":{"activeStrategies":[
+		{"key":"pocketid","strategy":{"key":"oauth2"},"displayName":"Pocket ID","order":0,"isEnabled":true,"selfRegistration":true,
+		 "config":[{"key":"clientId","value":"{\"type\":\"String\",\"title\":\"Client ID\",\"order\":1,\"value\":\"cid\"}"},
+		           {"key":"mapGroups","value":"{\"type\":\"Boolean\",\"default\":false,\"value\":true}"}]},
+		{"key":"local","strategy":{"key":"local"},"displayName":"Local","order":1,"isEnabled":true,"selfRegistration":false,"config":[]}]}}}`}}
+	c, logged := client(f)
+	got, err := c.ActiveStrategies(context.Background(), "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Key != "pocketid" || got[0].StrategyKey != "oauth2" || !got[0].Enabled || !got[0].SelfRegistration || got[1].Order != 1 {
+		t.Fatalf("%+v", got)
+	}
+	if got[0].Config["clientId"] != "cid" || got[0].Config["mapGroups"] != true || len(got[1].Config) != 0 {
+		t.Errorf("config %+v %+v", got[0].Config, got[1].Config)
+	}
+	if strings.Contains(f.queries[0], "mutation") || len(*logged) != 0 {
+		t.Errorf("a read was a mutation or logged as a write: %s %v", f.queries[0], *logged)
+	}
+}
+
+func TestSiteConfigReadsWhatUpdateSiteWrites(t *testing.T) {
+	f := &fake{answer: map[string]string{"config": `{"data":{"site":{"config":{"host":"https://wiki.example.org","title":"T","description":null,"logoUrl":"","authAutoLogin":true,"authHideLocal":true,"securityTrustProxy":false,"uploadMaxFileSize":5242880}}}}`}}
+	c, _ := client(f)
+	got, err := c.SiteConfig(context.Background(), "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Site{Host: "https://wiki.example.org", Title: "T", AutoLogin: true, HideLocal: true, UploadMaxFileSize: 5242880}
+	if got != want {
+		t.Errorf("%+v", got)
 	}
 }
