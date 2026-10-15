@@ -90,9 +90,13 @@ func (c *Client) Healthy(ctx context.Context) error {
 // SetupMode is whether the instance serves its setup wizard. In setup mode
 // Wiki.js answers GET * and POST /finalize and 404s everything else
 // (server/setup.js:68,76,382 at v2.5.316), so a POST to /graphql tells them
-// apart without changing anything.
+// apart without changing anything. The probe does not keep its connection:
+// setup mode's error handler sends the 404 and then throws, reading
+// WIKI.telemetry, which setup never sets (server/setup.js:388-396), and
+// Express destroys the socket after a response, so the POST /finalize
+// that follows would be reset on it.
 func (c *Client) SetupMode(ctx context.Context) (bool, error) {
-	status, _, err := c.post(ctx, "/graphql", "", map[string]any{"query": "{__typename}"})
+	status, _, err := c.send(ctx, "/graphql", "", map[string]any{"query": "{__typename}"}, true)
 	if err != nil {
 		return false, err
 	}
@@ -359,11 +363,18 @@ func (c *Client) gql(ctx context.Context, token, query string, vars map[string]a
 }
 
 func (c *Client) post(ctx context.Context, path, token string, payload any) (int, []byte, error) {
+	return c.send(ctx, path, token, payload, false)
+}
+
+// send posts payload as JSON. With closeConn the connection is closed after
+// the response rather than kept for the next request.
+func (c *Client) send(ctx context.Context, path, token string, payload any, closeConn bool) (int, []byte, error) {
 	b, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(b))
 	if err != nil {
 		return 0, nil, err
 	}
+	req.Close = closeConn
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)

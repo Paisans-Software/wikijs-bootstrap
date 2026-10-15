@@ -62,6 +62,24 @@ func TestSetupModeIsA404OnGraphQL(t *testing.T) {
 	}
 }
 
+// Wiki.js in setup mode answers the probe's 404 and then destroys the
+// socket, so a pooled connection would reset the POST /finalize after it.
+func TestTheSetupProbeClosesItsConnection(t *testing.T) {
+	var closed []bool
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		closed = append(closed, r.Close)
+		http.NotFound(w, r)
+	}))
+	defer s.Close()
+	c := &Client{BaseURL: s.URL, HTTP: s.Client()}
+	if _, err := c.SetupMode(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(closed) != 1 || !closed[0] {
+		t.Errorf("the probe asked to keep its connection: %v", closed)
+	}
+}
+
 func TestLoginReturnsTheJWTOrErrLogin(t *testing.T) {
 	f := &fake{answer: map[string]string{"login": `{"data":{"authentication":{"login":{"jwt":"tok","responseResult":{"succeeded":true}}}}}`}}
 	c, _ := client(f)
