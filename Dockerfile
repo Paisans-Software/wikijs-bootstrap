@@ -6,7 +6,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /wikijs-bootstrap ./cmd/wikijs-bootstrap
+# The heartbeat's User-Agent names it.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /wikijs-bootstrap ./cmd/wikijs-bootstrap
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /wikijs-bootstrap /wikijs-bootstrap
