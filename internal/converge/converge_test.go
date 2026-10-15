@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -81,8 +82,17 @@ func (f *fakeWiki) CreateGroup(_ context.Context, _ string, name string) (int, e
 	f.writes = append(f.writes, "create "+name)
 	id := f.next
 	f.next++
-	f.groups[id] = wiki.Group{ID: id, Name: name, RedirectOnLogin: "/", Permissions: []string{"read:pages"}}
+	f.groups[id] = wiki.Group{ID: id, Name: name, RedirectOnLogin: "/", Permissions: slices.Clone(wikiDefaultRoles), PageRules: []wiki.PageRule{wikiDefaultRule()}}
 	return id, nil
+}
+
+// wikiDefaultRoles and wikiDefaultRule are what groups.create gives a new
+// group: WIKI.data.groups.defaultPermissions and defaultPageRules
+// (server/app/data.yml:143-158 at v2.5.315).
+var wikiDefaultRoles = []string{"read:pages", "read:assets", "read:comments", "write:comments"}
+
+func wikiDefaultRule() wiki.PageRule {
+	return wiki.PageRule{ID: "default", Match: "START", Path: "", Roles: slices.Clone(wikiDefaultRoles), Locales: []string{}}
 }
 func (f *fakeWiki) UpdateGroup(_ context.Context, _ string, g wiki.Group) error {
 	f.writes = append(f.writes, fmt.Sprintf("update %d", g.ID))
@@ -238,17 +248,79 @@ func TestSyncedGroupsAreCreatedOnceAndAdminsGetPermissions(t *testing.T) {
 	}
 }
 
-func TestAdminGroupKeepsItsPageRules(t *testing.T) {
+func adminRule(t *testing.T, g wiki.Group) wiki.PageRule {
+	t.Helper()
+	var found []wiki.PageRule
+	for _, r := range g.PageRules {
+		if r.ID == "paisans-admin" {
+			found = append(found, r)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want one paisans-admin rule, got %+v", g.PageRules)
+	}
+	return found[0]
+}
+
+func checkAdminRule(t *testing.T, r wiki.PageRule) {
+	t.Helper()
+	want := []string{
+		"read:pages", "write:pages", "manage:pages", "delete:pages",
+		"read:source", "read:history",
+		"read:assets", "write:assets", "manage:assets",
+		"write:scripts", "write:styles",
+		"read:comments", "write:comments", "manage:comments",
+	}
+	if r.Deny || r.Match != "START" || r.Path != "" || r.Locales == nil || len(r.Locales) != 0 {
+		t.Errorf("admin rule %+v", r)
+	}
+	for _, role := range r.Roles {
+		if !slices.Contains(AdminPermissions, role) {
+			t.Errorf("admin rule grants %s, which the admin group's permissions lack", role)
+		}
+	}
+	got, exp := slices.Clone(r.Roles), slices.Clone(want)
+	slices.Sort(got)
+	slices.Sort(exp)
+	if !slices.Equal(got, exp) {
+		t.Errorf("admin rule roles %v, want %v", r.Roles, want)
+	}
+}
+
+func TestANewAdminGroupCanWritePagesEverywhere(t *testing.T) {
 	w, s := newWiki(false), &fakeState{populated: true}
-	rule := wiki.PageRule{ID: "a", Match: "START", Path: "admin", Roles: []string{"read:pages"}}
-	w.groups[3] = wiki.Group{ID: 3, Name: "admins", RedirectOnLogin: "/", PageRules: []wiki.PageRule{rule}}
+	for i := 0; i < 2; i++ {
+		if err := Run(context.Background(), cfg(), w, s, &fakeStopper{}, time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+		admins := w.groups[3]
+		if admins.Name != "admins" {
+			t.Fatalf("group 3 is %q", admins.Name)
+		}
+		if len(admins.PageRules) != 2 || !reflect.DeepEqual(admins.PageRules[0], wikiDefaultRule()) {
+			t.Errorf("run %d: page rules %+v", i+1, admins.PageRules)
+		}
+		checkAdminRule(t, adminRule(t, admins))
+	}
+	if len(w.groups[4].PageRules) != 1 || w.groups[4].PageRules[0].ID != "default" {
+		t.Errorf("members page rules %+v", w.groups[4].PageRules)
+	}
+}
+
+func TestAdminGroupKeepsOtherPageRulesAndRewritesItsOwn(t *testing.T) {
+	w, s := newWiki(false), &fakeState{populated: true}
+	human := wiki.PageRule{ID: "a", Deny: true, Match: "EXACT", Path: "secret", Roles: []string{"read:pages"}, Locales: []string{"en"}}
+	stale := wiki.PageRule{ID: "paisans-admin", Deny: true, Match: "EXACT", Path: "x", Roles: []string{"read:pages"}, Locales: []string{"fr"}}
+	w.groups[3] = wiki.Group{ID: 3, Name: "admins", RedirectOnLogin: "/", PageRules: []wiki.PageRule{human, stale, wikiDefaultRule()}}
 	w.next = 4
 	if err := Run(context.Background(), cfg(), w, s, &fakeStopper{}, time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	if len(w.groups[3].PageRules) != 1 || w.groups[3].PageRules[0].Path != "admin" {
-		t.Errorf("page rules %+v", w.groups[3].PageRules)
+	rules := w.groups[3].PageRules
+	if len(rules) != 3 || !reflect.DeepEqual(rules[0], human) || rules[1].ID != "paisans-admin" || !reflect.DeepEqual(rules[2], wikiDefaultRule()) {
+		t.Fatalf("page rules %+v", rules)
 	}
+	checkAdminRule(t, rules[1])
 }
 
 func TestOtherGroupsAreNeverEdited(t *testing.T) {
