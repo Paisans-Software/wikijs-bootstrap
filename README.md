@@ -48,7 +48,7 @@ Optional:
 | the strategy list | `authentication.updateStrategies` |
 | the site settings | `site.updateConfig` |
 | the `Guests` group's permissions and page rules | `groups.update`, ID 2 |
-| the admin group's permissions | `groups.update` |
+| the admin group's permissions and its `paisans-admin` page rule | `groups.update` |
 | a missing `synced_groups` group | `groups.create` |
 | a stale instance's restart | `SIGTERM` to the app's process |
 

@@ -57,6 +57,20 @@ var AdminPermissions = []string{
 	"manage:navigation", "manage:theme",
 }
 
+// adminRuleID names the page rule the bootstrap owns on the admin group.
+const adminRuleID = "paisans-admin"
+
+// adminPageRoles is every role Wiki.js's page rule editor offers
+// (client/components/admin/admin-groups-edit-rules.vue:215-229 at v2.5.315),
+// all of which are in AdminPermissions.
+var adminPageRoles = []string{
+	"read:pages", "write:pages", "manage:pages", "delete:pages",
+	"read:source", "read:history",
+	"read:assets", "write:assets", "manage:assets",
+	"write:scripts", "write:styles",
+	"read:comments", "write:comments", "manage:comments",
+}
+
 func Run(ctx context.Context, c config.Config, w Wiki, s State, p Stopper, wait time.Duration) error {
 	if err := until(ctx, wait, func() error { return w.Healthy(ctx) }); err != nil {
 		return fmt.Errorf("Wiki.js never answered /healthz: %w", err)
@@ -163,7 +177,7 @@ func strategies(c config.Config) []wiki.Strategy {
 }
 
 // groups creates each synced group Wiki.js lacks and sets the admin group's
-// permissions, keeping its page rules. No other group is edited.
+// permissions and its paisans-admin page rule. No other group is edited.
 func groups(ctx context.Context, c config.Config, w Wiki, token string) error {
 	list, err := w.Groups(ctx, token)
 	if err != nil {
@@ -197,7 +211,37 @@ func groups(ctx context.Context, c config.Config, w Wiki, token string) error {
 		return fmt.Errorf("the admin group %q does not exist in Wiki.js, so its permissions were not set", c.AdminGroup)
 	}
 	admin.Permissions = AdminPermissions
+	admin.PageRules = withAdminRule(admin.PageRules)
 	return w.UpdateGroup(ctx, token, admin)
+}
+
+// withAdminRule returns rules with the paisans-admin rule set to allow
+// adminPageRoles on every path in every locale, rewritten in place if it is
+// there and appended if not. Every other rule is kept as it is.
+//
+// Wiki.js grants a page action only when a group holds the permission and a
+// page rule grants it too (server/core/auth.js:221-291 at v2.5.315), and
+// groups.create gives a group one rule granting four read and comment roles
+// (server/app/data.yml:148-158), so the permissions alone let no one write.
+// Beside that default rule, an allow START "" rule wins: rules of the same
+// match and path length take the later one unless the earlier is a deny
+// (server/core/auth.js:416-436), and a rule without the permission asked
+// for is skipped (auth.js:252). So a deny rule the admins add still wins
+// over this one wherever it is at least as specific.
+func withAdminRule(rules []wiki.PageRule) []wiki.PageRule {
+	own := wiki.PageRule{ID: adminRuleID, Match: "START", Path: "", Roles: adminPageRoles, Locales: []string{}}
+	out := make([]wiki.PageRule, 0, len(rules)+1)
+	found := false
+	for _, r := range rules {
+		if r.ID == adminRuleID {
+			r, found = own, true
+		}
+		out = append(out, r)
+	}
+	if !found {
+		out = append(out, own)
+	}
+	return out
 }
 
 // until retries f every wait for two minutes' worth of tries, or until ctx ends.
